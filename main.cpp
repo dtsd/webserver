@@ -1,27 +1,93 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <string.h>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 #include <sstream>
 #include <vector>
+#include <string>
+#include <queue>
+
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <functional>
+#include <atomic>
 
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <pthread.h>
+#include <unistd.h>
 
 using namespace std;
 
-    const char *response_200 = "HTTP/1.1 200 OK\nContent-Type: text/html; charset=utf-8\n\n<html><body><i>Hello!</i></body></html>";
-    const char *response_400 = "HTTP/1.1 400 Bad Request\nContent-Type: text/html; charset=utf-8\n\n<html><body><i>Bad Request!</i></body></html>";
-    const char *response_404 = "HTTP/1.1 404 Not Found\nContent-Type: text/html; charset=utf-8\n\n<html><body><i>Not Found!</i></body></html>";
+template <class T>
+class SafeQueue {
+    mutex m;
+    queue<T> q;
+    condition_variable cv;
+public:
+    void push(T v) {
+        lock_guard<mutex> lk(m);
+        q.push(move(v));
+        cv.notify_one();
+    }
 
-void *handle_request(void *pcliefd) 
+    bool try_pop(T &v) {
+        lock_guard<mutex> lk(m);
+        if(q.empty()) {
+            return false;
+        }
+        v = move(q.front());
+        q.pop();
+        return true;
+    }
+private:
+    /* data */
+};
+
+class Pool {
+public:
+    typedef function<void()> Task;
+
+    Pool() : done(false) {
+        unsigned c = thread::hardware_concurrency();
+        //unsigned c = 1000;
+        printf("Pool() with %d threads\n", c);
+        for(unsigned i = 0; i < c; ++i) {
+            vt.push_back(thread(&Pool::worker, this));
+        }
+    }
+
+    ~Pool() {
+        done = true;
+    }
+
+    void submit(Task t) {
+        sq.push(t);
+    }
+private:
+    atomic_bool done;
+    SafeQueue<Task> sq;
+    vector<thread> vt;
+
+    void worker() {
+        while(!done) {
+            Task t;
+            if(sq.try_pop(t)) {
+                t();
+            } else {
+                this_thread::yield();
+            }
+        }
+    }
+};
+
+    const char *response_200 = "HTTP/1.1 200 OK\nConnection: close\nContent-Type: text/html; charset=utf-8\n\n<html><body><i>Hello!</i></body></html>";
+    const char *response_400 = "HTTP/1.1 400 Bad Request\nConnection: close\nContent-Type: text/html; charset=utf-8\n\n<html><body><i>Bad Request!</i></body></html>";
+    const char *response_404 = "HTTP/1.1 404 Not Found\nConnection: close\nContent-Type: text/html; charset=utf-8\n\n<html><body><i>Not Found!</i></body></html>";
+
+void handle_request(int cliefd) 
 {
-    int cliefd = *(int*)pcliefd;
-    delete (int *)pcliefd;
-
     ssize_t n;
     char buffer[255];
     const char *response;
@@ -29,7 +95,7 @@ void *handle_request(void *pcliefd)
     n = recv(cliefd, buffer, sizeof(buffer), 0);
     if(n < 0) {
         perror("recv()");
-        return 0;
+        return;
     }
 
     buffer[n] = 0;
@@ -56,21 +122,20 @@ void *handle_request(void *pcliefd)
         }
     }
 
-    n = write(cliefd, response, strlen(response));
+    n = send(cliefd, response, strlen(response), 0);
     if(n < 0) {
         perror("write()"); 
-        return 0;
+        return;
     }
 
     close(cliefd);
-    return 0;
+    return;
 }
 
 int main(int argc, const char *argv[])
 {
     int sockfd = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
     struct sockaddr_in servaddr;
-    pthread_t thread;
 
     if(sockfd < 0) {
         perror("socket() error");
@@ -98,6 +163,8 @@ int main(int argc, const char *argv[])
     char s[INET_ADDRSTRLEN];
     socklen_t cliesize;
 
+    Pool p;
+
     while(true) {
 
         cliesize = sizeof(clieaddr);
@@ -107,19 +174,14 @@ int main(int argc, const char *argv[])
             continue;
         }
 
+        /*
+         * std::thread::hardware_concurrency
+         */
+
         inet_ntop(clieaddr.ss_family, (void *)&((struct sockaddr_in *)&clieaddr)->sin_addr, s, sizeof(s));
         printf("accept() %s\n", s);
 
-
-        int *pcliefd = new int;
-        *pcliefd = cliefd;
-        if(true) {
-            if(pthread_create(&thread, 0, handle_request, pcliefd) < 0) {
-                perror("pthread_create()");
-            } 
-        } else {
-            handle_request(pcliefd);
-        }
+        p.submit(bind(handle_request, cliefd));
     }
 
     return 0;

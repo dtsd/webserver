@@ -2,7 +2,9 @@ SOURCES := main.cpp
 # Objs are all the sources, with .cpp replaced by .o
 OBJS := $(SOURCES:.cpp=.o)
 
-CC := g++
+#CC := g++ 
+CC := clang++
+CFLAGS := -std=c++11
 LIBS := -lpthread
 
 all: test
