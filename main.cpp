@@ -26,6 +26,9 @@ class SafeQueue {
     queue<T> q;
     condition_variable cv;
 public:
+    SafeQueue() {}
+    SafeQueue(const SafeQueue &) = delete;
+
     void push(T v) {
         lock_guard<mutex> lk(m);
         q.push(move(v));
@@ -62,6 +65,8 @@ public:
         done = true;
     }
 
+    Pool(const Pool &) = delete;
+
     void submit(Task t) {
         sq.push(t);
     }
@@ -92,20 +97,34 @@ void handle_request(int cliefd)
     char buffer[255];
     const char *response;
 
-    n = recv(cliefd, buffer, sizeof(buffer), 0);
-    if(n < 0) {
-        perror("recv()");
-        return;
+    string s, token;
+    istringstream ss(s);
+    vector<string> token_list;
+
+    while (true) {
+        n = read(cliefd, buffer, sizeof(buffer) - 1);
+        if(n == -1) {
+            perror("read()");
+            return;
+        } else if (n == 0) {
+            break;
+        }
+
+        buffer[n] = 0;
+        s += string(buffer);
+
+        if(
+            s[s.size() - 2] == '\r'
+            && s[s.size() - 1] == '\n'
+                ) {
+            break;
+        }
     }
 
-    buffer[n] = 0;
-    //printf("recv() %s\n", buffer);
+    //printf("read() %s\n", s.c_str());
 
     response = response_400;
 
-    string s(buffer), token;
-    istringstream ss(s);
-    vector<string> token_list;
     for(int i = 0; i < 3 && ss; i++) {
         ss >> token;
         //printf("token %d %s\n", i, token.c_str());
@@ -122,10 +141,21 @@ void handle_request(int cliefd)
         }
     }
 
-    n = send(cliefd, response, strlen(response), 0);
-    if(n < 0) {
-        perror("write()"); 
-        return;
+    while(true) {
+        n = write(cliefd, response, strlen(response));
+        if(n == -1) {
+            perror("write()"); 
+            return;
+        } else if (n == 0) {
+            break;
+        }
+
+        response += n;
+
+        if(!strlen(response)) {
+            break;
+        }
+
     }
 
     close(cliefd);
